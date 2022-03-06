@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>micro:bitでIoT</title>
+</head>
+
+<body>
+  <h1>micro:bitでIoT</h1>
+  <button id="button01">接続</button>
+  <button id="button02">シリアル通信で書き込み（テスト用）</button>
+  <button id="button03">天気予報の情報を取得（テスト用）</button>
+
+  <script>
+    let port;
+    let waitFlag = false;
+    const url = "https://www.jma.go.jp/bosai/forecast/data/forecast/",
+      areaCode = "110000"; // 埼玉
+
+    const button01 = document.getElementById("button01");
+    const button02 = document.getElementById("button02");
+    const button03 = document.getElementById("button03");
+    button01.addEventListener("click", connectSerial, false);
+    button02.addEventListener("click", function () { serialWrite(333); }, false);
+    button03.addEventListener("click", getWeatherForecast, false);
+
+    class LineBreakTransformer {
+      constructor() {
+        this.chunks = "";
+      }
+
+      transform(chunk, controller) {
+        this.chunks += chunk;
+        const lines = this.chunks.split("\r\n");
+        this.chunks = lines.pop();
+        lines.forEach((line) => controller.enqueue(line));
+      }
+
+      flush(controller) {
+        controller.enqueue(this.chunks);
+      }
+    }
+
+    async function connectSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+
+        while (port.readable) {
+          const textDecoder = new TextDecoderStream();
+          const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+          const reader = textDecoder.readable
+            .pipeThrough(new TransformStream(new LineBreakTransformer()))
+            .getReader();
+
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) {
+                console.log("Canceled");
+                break;
+              }
+              const trimmedValue = value.trim();
+              if (trimmedValue === "get") {
+                console.log(trimmedValue, trimmedValue.length);
+                getWeatherForecast();
+              }
+            }
+          } catch (error) {
+            console.log("Error: Read");
+            console.log(error);
+          } finally {
+            reader.releaseLock();
+          }
+        }
+      } catch (error) {
+        console.log("Error: Open");
+        console.log(error);
+      }
+    }
+
+    async function getWeatherForecast() {
+      if (!waitFlag) {
+        waitFlag = true;
+        const res = await fetch(`${url}${areaCode}.json`);
+        let json;
+        try {
+          if (res.ok) {
+            json = await res.json();
+          } else {
+            throw new Error(res.status);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        console.log(json);
+        const area = `【埼玉県】 ` + json[0].timeSeries[1].areas[0].area.name;
+        const pops2 = json[0].timeSeries[1].areas[0].pops[2];
+        console.log(area, pops2);
+        serialWrite(pops2);
+
+        (async () => {
+          console.log("待ち開始");
+          await new Promise(s => setTimeout(s, 5000))
+          console.log("待ち終了");
+          waitFlag = false;
+        })();
+      }
+    }
+
+    async function serialWrite(inputNum) {
+      const text = "P:" + inputNum;
+      const encoder = new TextEncoder();
+      const writer = port?.writable.getWriter();
+      if (writer) {
+        await writer.write(encoder.encode(text));
+        console.log("テキスト書き込み: " + text);
+        writer.releaseLock();
+      }
+    }
+  </script>
+</body>
+
+</html>
